@@ -1,0 +1,38 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.94582,0.92731,1.00000,1.00000",
+      "display-p3:0.88370,0.90912,0.95601,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode" : "plus-lighter",
+          "fill" : {
+            "linear-gradient" : [
+              "srgb:0.07556,0.36111,1.00000,1.00000",
+              "display-p3:0.58848,0.06445,1.00000,1.00000"
+            ]
+          },
+          "glass" : true,
+          "image-name" : "HAT.svg",
+          "name" : "HAT"
+        }
+      ],
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.6
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.8
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}
