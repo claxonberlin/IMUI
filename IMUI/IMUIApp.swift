@@ -143,7 +143,7 @@ enum Destination: Hashable {
     case folder(URL)
 }
 
-struct ConversionResult: Identifiable {
+struct ConversionResult: Identifiable, Equatable {
     let id = UUID()
     let source: URL
     let output: URL?
@@ -384,19 +384,134 @@ func makeThumbnail(for url: URL, size: CGFloat = 44) async -> NSImage? {
     return thumbnail?.nsImage
 }
 
+// MARK: - App Model
+
+/// One owner for everything the window and the menu bar both act on.
+@MainActor @Observable
+final class AppModel {
+    let settings = ConversionSettings()
+    let engine = ConversionEngine()
+    var items: [ImageItem] = []
+    var selection: Set<ImageItem.ID> = []
+    var tools: Toolchain?
+
+    init() {
+        tools = Toolchain.discover()
+    }
+
+    var outputs: [URL] { engine.results.compactMap(\.output) }
+    var hasPDFInput: Bool { items.contains { $0.isPDF } }
+    var canConvert: Bool { !items.isEmpty && !engine.isRunning && tools != nil }
+
+    func add(_ urls: [URL]) {
+        let known = Set(items.map(\.url))
+        let new = urls.filter { isConvertible($0) && !known.contains($0) }.map { ImageItem(url: $0) }
+        guard !new.isEmpty else { return }
+        items.append(contentsOf: new)
+        engine.reset()
+
+        for item in new {
+            Task {
+                guard let image = await makeThumbnail(for: item.url),
+                      let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+                items[index].thumbnail = image
+            }
+        }
+    }
+
+    func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image, .pdf]
+        panel.message = "Choose images or PDFs to convert."
+        if panel.runModal() == .OK { add(panel.urls) }
+    }
+
+    func removeSelected() {
+        items.removeAll { selection.contains($0.id) }
+        selection.removeAll()
+    }
+
+    func convert() {
+        guard canConvert, let tools else { return }
+        engine.run(items, recipe: settings.recipe, tools: tools)
+    }
+
+    func cancel() {
+        engine.cancel()
+    }
+
+    func revealOutputs() {
+        guard !outputs.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(outputs)
+    }
+
+    func rediscoverTools() {
+        tools = Toolchain.discover()
+    }
+}
+
+// MARK: - Menus
+
+struct AppCommands: Commands {
+    let model: AppModel
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("Add Images…") { model.chooseFiles() }
+                .keyboardShortcut("o")
+        }
+
+        CommandGroup(after: .newItem) {
+            Divider()
+            Button("Show Converted Files in Finder") { model.revealOutputs() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(model.outputs.isEmpty)
+        }
+
+        // Select All is left to the focused list, so it keeps working in text fields.
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Remove Selected") { model.removeSelected() }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(model.selection.isEmpty)
+        }
+
+        CommandMenu("Convert") {
+            Button("Convert Images") { model.convert() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!model.canConvert)
+
+            Button("Stop") { model.cancel() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(!model.engine.isRunning)
+
+            Divider()
+
+            Picker("Format", selection: Bindable(model.settings).format) {
+                ForEach(OutputFormat.allCases) { Text($0.rawValue).tag($0) }
+            }
+
+            Picker("Resize", selection: Bindable(model.settings).resizeMode) {
+                ForEach(ResizeMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+        }
+    }
+}
+
 // MARK: - App
 
 @main
 struct IMUIApp: App {
+    @State private var model = AppModel()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: model)
         }
-        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 880, height: 600)
-        .commands {
-            CommandGroup(replacing: .newItem) {}
-        }
+        .defaultSize(width: 900, height: 620)
+        .commands { AppCommands(model: model) }
     }
 }

@@ -11,27 +11,21 @@ import AppKit
 // MARK: - Root
 
 struct ContentView: View {
-    @State private var settings = ConversionSettings()
-    @State private var engine = ConversionEngine()
-    @State private var items: [ImageItem] = []
-    @State private var selection: Set<ImageItem.ID> = []
-    @State private var tools = Toolchain.discover()
+    @Bindable var model: AppModel
     @State private var isTargeted = false
 
     var body: some View {
         Group {
-            if let tools {
+            if let tools = model.tools {
                 NavigationSplitView {
-                    Library(items: $items, selection: $selection, onAdd: chooseFiles)
-                        .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 380)
+                    Options(model: model, tools: tools)
+                        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
                 } detail: {
-                    Options(settings: settings, engine: engine, items: items, tools: tools) {
-                        engine.run(items, recipe: settings.recipe, tools: tools)
-                    }
+                    Library(model: model)
                 }
                 .navigationSplitViewStyle(.balanced)
                 .dropDestination(for: URL.self) { urls, _ in
-                    add(urls)
+                    model.add(urls)
                     return true
                 } isTargeted: {
                     isTargeted = $0
@@ -44,94 +38,104 @@ struct ContentView: View {
                 }
                 .animation(.easeOut(duration: 0.15), value: isTargeted)
             } else {
-                MissingTools { tools = Toolchain.discover() }
+                MissingTools { model.rediscoverTools() }
             }
         }
-        .frame(minWidth: 700, minHeight: 460)
-    }
-
-    private func add(_ urls: [URL]) {
-        let known = Set(items.map(\.url))
-        let new = urls.filter { isConvertible($0) && !known.contains($0) }.map { ImageItem(url: $0) }
-        items.append(contentsOf: new)
-        engine.reset()
-
-        for item in new {
-            Task {
-                guard let image = await makeThumbnail(for: item.url),
-                      let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-                items[index].thumbnail = image
-            }
-        }
-    }
-
-    private func chooseFiles() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.image, .pdf]
-        panel.message = "Choose images or PDFs to convert."
-        if panel.runModal() == .OK { add(panel.urls) }
+        .frame(minWidth: 760, minHeight: 480)
     }
 }
 
 // MARK: - Library
 
 struct Library: View {
-    @Binding var items: [ImageItem]
-    @Binding var selection: Set<ImageItem.ID>
-    let onAdd: () -> Void
+    @Bindable var model: AppModel
+
+    private var resultsBySource: [URL: ConversionResult] {
+        Dictionary(model.engine.results.map { ($0.source, $0) }, uniquingKeysWith: { _, latest in latest })
+    }
 
     var body: some View {
-        List(items, selection: $selection) { item in
-            Row(item: item)
+        List(model.items, selection: $model.selection) { item in
+            Row(item: item, result: resultsBySource[item.url])
         }
-        .listStyle(.sidebar)
+        .listStyle(.inset)
+        // Plain Delete works while the list holds focus; the menu adds a global Command-Delete.
+        .onDeleteCommand(perform: model.removeSelected)
         .overlay {
-            if items.isEmpty {
+            if model.items.isEmpty {
                 ContentUnavailableView {
                     Label("No Images", systemImage: "photo.on.rectangle.angled")
                 } description: {
                     Text("Drop images or PDFs here.")
                 } actions: {
-                    Button("Choose Files…", action: onAdd)
+                    Button("Choose Files…") { model.chooseFiles() }
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 2) {
-                Button(action: onAdd) {
-                    Image(systemName: "plus")
-                }
-                .help("Add images")
+        .safeAreaInset(edge: .bottom) { statusBar }
+        .navigationTitle("")
+        .toolbar {
+            // Adjacent items in one group share a single glass capsule, the way
+            // Safari pairs back and forward.
+            ToolbarItemGroup(placement: .navigation) {
+                Button("Add Images", systemImage: "plus") { model.chooseFiles() }
+                    .help("Add images")
 
-                Button {
-                    items.removeAll { selection.contains($0.id) }
-                    selection.removeAll()
-                } label: {
-                    Image(systemName: "minus")
+                Button("Remove Selected", systemImage: "minus", action: model.removeSelected)
+                    .disabled(model.selection.isEmpty)
+                    .help("Remove selected")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button("Stop", systemImage: "xmark", action: model.cancel)
+                    .disabled(!model.engine.isRunning)
+                    .help("Stop converting")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button("Convert", action: model.convert)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canConvert)
+                    .help("Convert every image in the list")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if model.engine.isRunning {
+                ProgressView(value: model.engine.progress)
+                    .frame(width: 140)
+                Text(model.engine.currentFile)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            } else {
+                if !model.items.isEmpty {
+                    Text("^[\(model.items.count) image](inflect: true)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(selection.isEmpty)
-                .help("Remove selected")
 
                 Spacer()
 
-                if !items.isEmpty {
-                    Text("^[\(items.count) image](inflect: true)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !model.outputs.isEmpty {
+                    Button("Show in Finder", action: model.revealOutputs)
                 }
             }
-            .buttonStyle(.accessoryBar)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.bar)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 }
 
 struct Row: View {
     let item: ImageItem
+    let result: ConversionResult?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -145,36 +149,52 @@ struct Row: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .frame(width: 28, height: 28)
+            .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.filename)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(item.fileSize)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                if let error = result?.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                } else {
+                    Text(item.fileSize)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if let result {
+                Image(systemName: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(result.succeeded ? .green : .orange)
+                    .accessibilityLabel(result.succeeded ? "Converted" : "Failed")
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 }
 
 // MARK: - Options
 
 struct Options: View {
-    @Bindable var settings: ConversionSettings
-    let engine: ConversionEngine
-    let items: [ImageItem]
+    @Bindable var model: AppModel
     let tools: Toolchain
-    let onConvert: () -> Void
 
     /// PDF pages are resolution-independent, so a raster target needs a density.
     private var needsDPI: Bool {
-        settings.format.isRaster && items.contains { $0.isPDF }
+        model.settings.format.isRaster && model.hasPDFInput
     }
 
     var body: some View {
+        @Bindable var settings = model.settings
+
         Form {
             Section {
                 Picker("Format", selection: $settings.format) {
@@ -183,14 +203,15 @@ struct Options: View {
 
                 if settings.format.supportsQuality {
                     LabeledContent("Quality") {
-                        HStack(spacing: 12) {
+                        HStack(spacing: 10) {
                             // No `step:` — it would draw a tick mark per unit.
                             Slider(value: $settings.qualityValue, in: 1...100)
+                                .accessibilityLabel("Quality")
                             TextField("Quality", value: $settings.quality, format: .number)
                                 .labelsHidden()
                                 .multilineTextAlignment(.trailing)
                                 .monospacedDigit()
-                                .frame(width: 44)
+                                .frame(width: 40)
                         }
                     }
                 }
@@ -221,13 +242,12 @@ struct Options: View {
                         HStack(spacing: 6) {
                             TextField("Width", value: $settings.width, format: .number)
                                 .labelsHidden()
-                                .frame(width: 72)
+                                .frame(width: 62)
                             Text("×").foregroundStyle(.secondary)
                             TextField("Height", value: $settings.height, format: .number)
                                 .labelsHidden()
-                                .frame(width: 72)
+                                .frame(width: 62)
                             Text("px").foregroundStyle(.secondary)
-                            Spacer()
                         }
                     }
                 case .percent:
@@ -235,7 +255,7 @@ struct Options: View {
                         HStack(spacing: 6) {
                             TextField("Percent", value: $settings.percent, format: .number)
                                 .labelsHidden()
-                                .frame(width: 72)
+                                .frame(width: 62)
                             Text("%").foregroundStyle(.secondary)
                             Spacer()
                         }
@@ -246,28 +266,19 @@ struct Options: View {
             Section("Destination") {
                 DestinationPicker(settings: settings)
             }
-
-            if !engine.failures.isEmpty {
-                Section("Failed") {
-                    ForEach(engine.failures) { result in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(result.source.lastPathComponent).fontWeight(.medium)
-                            if let error = result.error {
-                                Text(error)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .animation(.easeOut(duration: 0.15), value: settings.resizeMode)
         .safeAreaInset(edge: .bottom) {
-            ActionBar(engine: engine, items: items, tools: tools, onConvert: onConvert)
+            Text(tools.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(.bar)
         }
     }
 }
@@ -277,7 +288,6 @@ struct Options: View {
 /// Safari's download-location convention: current choice plus an "Other…" escape hatch.
 struct DestinationPicker: View {
     @Bindable var settings: ConversionSettings
-    @State private var isChoosing = false
 
     var body: some View {
         Picker("Save To", selection: Binding(get: { settings.destination }, set: choose)) {
@@ -304,63 +314,6 @@ struct DestinationPicker: View {
         panel.message = "Choose where converted files are saved."
         if panel.runModal() == .OK, let url = panel.url {
             settings.destination = .folder(url)
-        }
-    }
-}
-
-// MARK: - Action Bar
-
-struct ActionBar: View {
-    let engine: ConversionEngine
-    let items: [ImageItem]
-    let tools: Toolchain
-    let onConvert: () -> Void
-
-    private var outputs: [URL] { engine.results.compactMap(\.output) }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            if engine.isRunning {
-                ProgressView(value: engine.progress)
-                    .frame(width: 120)
-                Text(engine.currentFile)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("Cancel", role: .cancel) { engine.cancel() }
-            } else {
-                status
-                Spacer()
-                if !outputs.isEmpty {
-                    Button("Show in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting(outputs)
-                    }
-                }
-                Button("Convert", action: onConvert)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(items.isEmpty)
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
-    }
-
-    @ViewBuilder
-    private var status: some View {
-        if !engine.results.isEmpty {
-            Label(
-                "\(outputs.count) of \(engine.results.count) converted",
-                systemImage: engine.failures.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-            )
-            .foregroundStyle(engine.failures.isEmpty ? .green : .orange)
-            .font(.callout)
-        } else {
-            Text(tools.summary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
     }
 }
@@ -397,5 +350,5 @@ struct MissingTools: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(model: AppModel())
 }

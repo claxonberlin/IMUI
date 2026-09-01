@@ -197,3 +197,68 @@ struct SettingsTests {
         #expect(settings.recipe.folder == URL(filePath: "/tmp/out"))
     }
 }
+
+/// Covers the state that drives the toolbar: Stop is enabled only while a run is in
+/// flight, Convert only when one is not.
+@MainActor
+struct EngineStateTests {
+
+    @Test func runningStateGatesTheToolbarButtons() async throws {
+        let tools = try #require(Toolchain.discover(), "ImageMagick is not installed")
+        let dir = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let model = AppModel()
+        model.settings.destination = .folder(dir)
+        model.settings.format = .jpeg
+
+        for index in 0..<3 {
+            let source = dir.appending(path: "source\(index).png")
+            let make = Process()
+            make.executableURL = tools.magick
+            make.arguments = ["-size", "400x400", "plasma:fractal", source.path]
+            make.environment = tools.environment
+            try make.run()
+            make.waitUntilExit()
+            model.items.append(ImageItem(url: source))
+        }
+
+        // Idle: Convert available, Stop greyed out.
+        #expect(model.engine.isRunning == false)
+        #expect(model.canConvert == true)
+
+        model.convert()
+
+        // Running: the pair swaps, synchronously, so the toolbar updates on click.
+        #expect(model.engine.isRunning == true)
+        #expect(model.canConvert == false)
+
+        while model.engine.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(model.engine.progress == 1.0)
+        #expect(model.outputs.count == 3)
+        #expect(model.canConvert == true)
+    }
+
+    @Test func emptyLibraryCannotConvert() {
+        let model = AppModel()
+        #expect(model.items.isEmpty)
+        #expect(model.canConvert == false)
+    }
+
+    @Test func removeSelectedClearsTheSelection() {
+        let model = AppModel()
+        model.items = [
+            ImageItem(url: URL(filePath: "/tmp/a.png")),
+            ImageItem(url: URL(filePath: "/tmp/b.png")),
+        ]
+        model.selection = [model.items[0].id]
+        model.removeSelected()
+        #expect(model.items.count == 1)
+        #expect(model.items[0].url.lastPathComponent == "b.png")
+        #expect(model.selection.isEmpty)
+    }
+}
