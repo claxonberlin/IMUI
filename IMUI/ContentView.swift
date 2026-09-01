@@ -19,7 +19,7 @@ struct ContentView: View {
             if let tools = model.tools {
                 NavigationSplitView(columnVisibility: $model.columns) {
                     Options(model: model, tools: tools)
-                        .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
+                        .navigationSplitViewColumnWidth(min: 260, ideal: 290, max: 400)
                 } detail: {
                     Library(model: model)
                 }
@@ -41,7 +41,7 @@ struct ContentView: View {
                 MissingTools { model.rediscoverTools() }
             }
         }
-        .frame(minWidth: 760, minHeight: 480)
+        .frame(minWidth: 640, minHeight: 420)
     }
 }
 

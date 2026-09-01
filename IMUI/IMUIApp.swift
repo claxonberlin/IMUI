@@ -532,11 +532,11 @@ struct IMUIApp: App {
 
     var body: some Scene {
         // `Window` rather than `WindowGroup`: a single window, and no New Window command.
-        Window("IMUI", id: "main") {
+        Window("IMUI", id: "converter") {
             ContentView(model: model)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 900, height: 620)
+        .defaultSize(width: 750, height: 500)
         .commands { AppCommands(model: model) }
     }
 }
