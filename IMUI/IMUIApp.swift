@@ -394,6 +394,7 @@ final class AppModel {
     var items: [ImageItem] = []
     var selection: Set<ImageItem.ID> = []
     var tools: Toolchain?
+    var columns: NavigationSplitViewVisibility = .all
 
     init() {
         tools = Toolchain.discover()
@@ -450,6 +451,10 @@ final class AppModel {
     func rediscoverTools() {
         tools = Toolchain.discover()
     }
+
+    func toggleSidebar() {
+        columns = columns == .detailOnly ? .all : .detailOnly
+    }
 }
 
 // MARK: - Menus
@@ -478,6 +483,13 @@ struct AppCommands: Commands {
                 .disabled(model.selection.isEmpty)
         }
 
+        CommandGroup(after: .sidebar) {
+            Button(model.columns == .detailOnly ? "Show Sidebar" : "Hide Sidebar") {
+                model.toggleSidebar()
+            }
+            .keyboardShortcut("s", modifiers: [.control, .command])
+        }
+
         CommandMenu("Convert") {
             Button("Convert Images") { model.convert() }
                 .keyboardShortcut(.return, modifiers: .command)
@@ -502,12 +514,25 @@ struct AppCommands: Commands {
 
 // MARK: - App
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // One window, so tabs and the Window menu's tab commands are noise.
+        NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+
 @main
 struct IMUIApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        // `Window` rather than `WindowGroup`: a single window, and no New Window command.
+        Window("IMUI", id: "main") {
             ContentView(model: model)
         }
         .windowResizability(.contentMinSize)

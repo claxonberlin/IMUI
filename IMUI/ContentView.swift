@@ -17,7 +17,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let tools = model.tools {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $model.columns) {
                     Options(model: model, tools: tools)
                         .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
                 } detail: {
