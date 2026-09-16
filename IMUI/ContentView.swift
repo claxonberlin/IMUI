@@ -56,7 +56,12 @@ struct Library: View {
 
     var body: some View {
         List(model.items, selection: $model.selection) { item in
-            Row(item: item, result: resultsBySource[item.url])
+            Row(
+                item: item,
+                result: resultsBySource[item.url],
+                progress: model.engine.progress[item.id],
+                isWaiting: model.engine.waiting.contains(item.id)
+            )
         }
         .listStyle(.inset)
         // Plain Delete works while the list holds focus; the menu adds a global Command-Delete.
@@ -68,11 +73,11 @@ struct Library: View {
                 } description: {
                     Text("Drop images or PDFs here.")
                 } actions: {
-                    Button("Choose Files…") { model.chooseFiles() }
+                    Button("Choose Files…", systemImage: "folder") { model.chooseFiles() }
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) { statusBar }
+        .bottomBar { statusBar }
         .navigationTitle("")
         .toolbar {
             // Adjacent items in one group share a single glass capsule, the way
@@ -84,19 +89,28 @@ struct Library: View {
                 Button("Remove Selected", systemImage: "minus", action: model.removeSelected)
                     .disabled(model.selection.isEmpty)
                     .help("Remove selected")
+
+                Button("Remove All", systemImage: "xmark", action: model.removeAll)
+                    .disabled(model.items.isEmpty || model.engine.isRunning)
+                    .help("Remove all images")
             }
 
+            // One slot: Convert becomes Stop while a batch runs.
             ToolbarItem(placement: .primaryAction) {
-                Button("Stop", systemImage: "xmark", action: model.cancel)
-                    .disabled(!model.engine.isRunning)
-                    .help("Stop converting")
-            }
-
-            ToolbarItem(placement: .primaryAction) {
-                Button("Convert", action: model.convert)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.canConvert)
-                    .help("Convert every image in the list")
+                if model.engine.isRunning {
+                    Button("Stop", systemImage: "stop.fill", action: model.cancel)
+                        .labelStyle(.titleAndIcon)
+                        .prominentButtonStyle(false)
+                        .help("Stop converting")
+                } else {
+                    Button("Convert", systemImage: "arrow.triangle.2.circlepath", action: model.convert)
+                        .labelStyle(.titleAndIcon)
+                        // A disabled prominent button keeps a washed-out accent tint;
+                        // drop to the plain style so an idle Convert reads as grey.
+                        .prominentButtonStyle(model.canConvert)
+                        .disabled(!model.canConvert)
+                        .help("Convert every image in the list")
+                }
             }
         }
     }
@@ -104,38 +118,29 @@ struct Library: View {
     @ViewBuilder
     private var statusBar: some View {
         HStack(spacing: 12) {
-            if model.engine.isRunning {
-                ProgressView(value: model.engine.progress)
-                    .frame(width: 140)
-                Text(model.engine.currentFile)
+            if !model.items.isEmpty {
+                Text("^[\(model.items.count) image](inflect: true)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-            } else {
-                if !model.items.isEmpty {
-                    Text("^[\(model.items.count) image](inflect: true)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+            }
 
-                Spacer()
+            Spacer()
 
-                if !model.outputs.isEmpty {
-                    Button("Show in Finder", action: model.revealOutputs)
-                }
+            if !model.engine.isRunning && !model.outputs.isEmpty {
+                Button("Show in Finder", systemImage: "folder", action: model.revealOutputs)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.bar)
     }
 }
 
 struct Row: View {
     let item: ImageItem
     let result: ConversionResult?
+    /// Set while this item is converting.
+    let progress: Double?
+    let isWaiting: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -156,7 +161,16 @@ struct Row: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                if let error = result?.error {
+                if let progress {
+                    ProgressView(value: progress)
+                        .controlSize(.small)
+                        .padding(.top, 3)
+                        .accessibilityLabel("Converting")
+                } else if isWaiting {
+                    Text("Waiting…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let error = result?.error {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.orange)
@@ -192,6 +206,17 @@ struct Options: View {
         model.settings.format.isRaster && model.hasPDFInput
     }
 
+    private var needsTransparencyOption: Bool {
+        needsDPI && model.settings.format.supportsAlpha
+    }
+
+    private var dpiFooter: String {
+        guard needsTransparencyOption, model.settings.transparentBackground else {
+            return "Pages are rasterised by Ghostscript at this density."
+        }
+        return "Pages are rasterised by Ghostscript at this density. Only PDFs that don't paint their own page background come out transparent."
+    }
+
     var body: some View {
         @Bindable var settings = model.settings
 
@@ -218,14 +243,18 @@ struct Options: View {
 
                 if needsDPI {
                     Picker("Resolution", selection: $settings.dpi) {
-                        ForEach([72, 150, 300, 600], id: \.self) { Text("\($0) dpi").tag($0) }
+                        ForEach([72, 144, 150, 300, 600], id: \.self) { Text("\($0) dpi").tag($0) }
                     }
+                }
+
+                if needsTransparencyOption {
+                    Toggle("Transparent Background", isOn: $settings.transparentBackground)
                 }
             } header: {
                 Text("Output")
             } footer: {
                 if needsDPI {
-                    Text("Pages are rasterised by Ghostscript at this density.")
+                    Text(dpiFooter)
                 }
             }
 
@@ -269,7 +298,8 @@ struct Options: View {
         }
         .formStyle(.grouped)
         .animation(.easeOut(duration: 0.15), value: settings.resizeMode)
-        .safeAreaInset(edge: .bottom) {
+        .animation(.easeOut(duration: 0.15), value: needsTransparencyOption)
+        .bottomBar {
             Text(tools.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -278,7 +308,6 @@ struct Options: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
-                .background(.bar)
         }
     }
 }
@@ -325,6 +354,32 @@ extension Toolchain {
     }
 }
 
+// MARK: - Platform Styling
+
+extension View {
+    /// A bar pinned to the bottom edge. On macOS 26 and later the system's scroll edge
+    /// effect blends it with the content under it; earlier releases get the frosted `.bar`.
+    @ViewBuilder
+    func bottomBar(@ViewBuilder content: () -> some View) -> some View {
+        if #available(macOS 26.0, *) {
+            safeAreaBar(edge: .bottom, content: content)
+        } else {
+            safeAreaInset(edge: .bottom) { content().background(.bar) }
+        }
+    }
+
+    /// The window's primary action: glass on macOS 26 and later, a filled bezel before.
+    /// Pass `false` to show the same control without the accent, e.g. while it's unavailable.
+    @ViewBuilder
+    func prominentButtonStyle(_ isProminent: Bool = true) -> some View {
+        if #available(macOS 26.0, *) {
+            if isProminent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
+        } else {
+            if isProminent { buttonStyle(.borderedProminent) } else { buttonStyle(.bordered) }
+        }
+    }
+}
+
 // MARK: - Missing Tools
 
 struct MissingTools: View {
@@ -343,8 +398,8 @@ struct MissingTools: View {
                 .padding(.vertical, 8)
                 .background(.quaternary, in: .rect(cornerRadius: 8))
 
-            Button("Try Again", action: onRetry)
-                .buttonStyle(.borderedProminent)
+            Button("Try Again", systemImage: "arrow.clockwise", action: onRetry)
+                .prominentButtonStyle()
         }
     }
 }
